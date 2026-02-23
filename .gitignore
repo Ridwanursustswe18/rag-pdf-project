@@ -5,3 +5,4 @@ backend/**/__pycache__/
 backend/**/*.pyc
 frontend/node_modules/
 backend/indexes/
+frontend/.env
