@@ -1,36 +1,36 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import Badge from "./Badge";
 import FileUploadZone from "./FileUploadZone";
 import QuestionInput from "./QuestionInput";
-import Results from "./Results";
+import ChatHistory from "./ChatHistory";
+
+const generateSessionId = () => `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
 const PDFQAApp = () => {
   const [uploadedFilename, setUploadedFilename] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [asking, setAsking] = useState(false);
   const [question, setQuestion] = useState("");
-  const [results, setResults] = useState([]);
+  const [history, setHistory] = useState([]);
   const [error, setError] = useState(null);
   const [cached, setCached] = useState(false);
-  const API_BASE = import.meta.env.VITE_API_BASE;  
+  const sessionId = useRef(generateSessionId());
+  const API_BASE = import.meta.env.VITE_API_BASE;
+
   const handleUpload = async (file) => {
     setUploading(true);
     setError(null);
-    setResults([]);
+    setHistory([]);
+    // New PDF = fresh session
+    sessionId.current = generateSessionId();
     try {
       const formData = new FormData();
       formData.append("pdf", file);
-
-      const res = await fetch(`${API_BASE}/upload`, {
-        method: "POST",
-        body: formData,
-      });
-
+      const res = await fetch(`${API_BASE}/upload`, { method: "POST", body: formData });
       if (!res.ok) {
         const err = await res.json();
         throw new Error(err.detail || "Upload failed");
       }
-
       const data = await res.json();
       setUploadedFilename(data.pdf_filename);
       setCached(data.cached);
@@ -42,25 +42,26 @@ const PDFQAApp = () => {
   };
 
   const handleAsk = async () => {
-    const clean = question.split("\n").map((q) => q.trim()).filter((q) => q.length);
-    if (!clean.length) return;
+    if (!question.trim()) return;
     setAsking(true);
     setError(null);
-    setResults([]);
     try {
       const res = await fetch(`${API_BASE}/ask`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pdf_filename: uploadedFilename, questions: clean }),
+        body: JSON.stringify({
+          pdf_filename: uploadedFilename,
+          session_id: sessionId.current,
+          questions: [question.trim()],
+        }),
       });
-
       if (!res.ok) {
         const err = await res.json();
         throw new Error(err.detail || "Request failed");
       }
-
       const data = await res.json();
-      setResults(data.results);
+      setHistory(data.history); 
+      setQuestion("");            
     } catch (e) {
       setError(e.message);
     } finally {
@@ -68,53 +69,79 @@ const PDFQAApp = () => {
     }
   };
 
-  const canAsk = uploadedFilename && question && !asking;
+  const handleClearSession = async () => {
+    try {
+      await fetch(`${API_BASE}/clear-session`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId.current }),
+      });
+      sessionId.current = generateSessionId();
+      setHistory([]);
+    } catch (e) {
+      setError("Failed to clear session");
+    }
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      if (canAsk) handleAsk();
+    }
+  };
+
+  const canAsk = uploadedFilename && question.trim() && !asking && !uploading;
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex items-start justify-center px-4 py-16">
       <div className="w-full max-w-2xl flex flex-col gap-8">
 
+        {/* Header */}
         <div className="flex flex-col gap-1">
           <div className="flex items-center gap-3">
             <span className="text-2xl">🔍</span>
             <h1 className="text-2xl font-bold tracking-tight">PDF Q&A</h1>
           </div>
-          <p className="text-zinc-500 text-sm ml-9">
-            Upload a PDF and ask anything about it.
-          </p>
+          <p className="text-zinc-500 text-sm ml-9">Upload a PDF and ask anything about it.</p>
         </div>
 
+        {/* Upload */}
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-between">
-            <p className="text-xs font-semibold text-zinc-500 uppercase tracking-widest">
-              Document
-            </p>
+            <p className="text-xs font-semibold text-zinc-500 uppercase tracking-widest">Document</p>
             {uploadedFilename && (
               <Badge variant={cached ? "loading" : "success"}>
                 {cached ? "cached index" : "indexed"}
               </Badge>
             )}
           </div>
-          <FileUploadZone
-            onUpload={handleUpload}
-            uploading={uploading}
-            uploadedFile={uploadedFilename}
+          <FileUploadZone onUpload={handleUpload} uploading={uploading} uploadedFile={uploadedFilename} />
+        </div>
+
+
+        <ChatHistory history={history} onClear={handleClearSession} />
+
+        {/* Question */}
+        <div className="flex flex-col gap-2">
+          <p className="text-xs font-semibold text-zinc-500 uppercase tracking-widest">
+            {history.length > 0 ? "Follow-up Question" : "Question"}
+          </p>
+          <QuestionInput
+            question={question}
+            onChange={setQuestion}
+            onKeyDown={handleKeyDown}
+            disabled={!uploadedFilename || asking}
           />
         </div>
 
-        <div className="flex flex-col gap-2">
-          <p className="text-xs font-semibold text-zinc-500 uppercase tracking-widest">
-            Questions
-          </p>
-          <QuestionInput question={question} onChange={setQuestion} />
-        </div>
-
+        {/* Error */}
         {error && (
           <div className="bg-red-950/40 border border-red-800/50 rounded-xl px-4 py-3 text-sm text-red-300">
             {error}
           </div>
         )}
 
+        {/* Submit */}
         <button
           onClick={handleAsk}
           disabled={!canAsk}
@@ -136,9 +163,9 @@ const PDFQAApp = () => {
           )}
         </button>
 
-        <Results results={results} />
       </div>
     </div>
   );
-}
+};
+
 export default PDFQAApp;
