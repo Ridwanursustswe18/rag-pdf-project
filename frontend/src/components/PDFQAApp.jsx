@@ -109,11 +109,7 @@ const PDFQAApp = () => {
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-between">
             <p className="text-xs font-semibold text-zinc-500 uppercase tracking-widest">Document</p>
-            {uploadedFilename && (
-              <Badge variant={cached ? "loading" : "success"}>
-                {cached ? "cached index" : "indexed"}
-              </Badge>
-            )}
+            
           </div>
           <FileUploadZone onUpload={handleUpload} uploading={uploading} uploadedFile={uploadedFilename} />
         </div>
