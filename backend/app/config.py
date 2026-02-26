@@ -8,8 +8,8 @@ class Settings(BaseSettings):
     gemini_api_key: str
     embedding_model: str = "gemini-embedding-001"
     llm_model: str = "gemini-2.5-flash"
-    chunk_size: int = 1000
-    chunk_overlap: int = 200
+    chunk_size: int = 1500
+    chunk_overlap: int = 150
     retriever_k: int = 4
     storage_dir: str = "indexes"
 
