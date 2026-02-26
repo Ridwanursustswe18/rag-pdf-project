@@ -1,28 +1,79 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import Badge from "./Badge";
 import FileUploadZone from "./FileUploadZone";
 import QuestionInput from "./QuestionInput";
 import ChatHistory from "./ChatHistory";
+import ProgressBar from "./Progressbar";
 
+const API_BASE = import.meta.env.VITE_API_BASE;
 const generateSessionId = () => `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+const POLL_INTERVAL = 5000;
 
 const PDFQAApp = () => {
-  const [uploadedFilename, setUploadedFilename] = useState(null);
+  const [pdfs, setPdfs] = useState([]);
+  const [selectedPdf, setSelectedPdf] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [asking, setAsking] = useState(false);
   const [question, setQuestion] = useState("");
-  const [history, setHistory] = useState([]);
   const [error, setError] = useState(null);
-  const [cached, setCached] = useState(false);
-  const sessionId = useRef(generateSessionId());
-  const API_BASE = import.meta.env.VITE_API_BASE;
+  const pollingRefs = useRef({});
+
+  const getSelectedPdfData = () => pdfs.find(p => p.filename === selectedPdf) || null;
+
+  const updatePdf = (filename, updates) =>
+    setPdfs(prev => prev.map(p => p.filename === filename ? { ...p, ...updates } : p));
+
+  const startPolling = (taskId, filename) => {
+    const intervalId = setInterval(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/upload-status/${taskId}`);
+        const data = await res.json();
+
+        updatePdf(filename, {
+          progress: data.progress,
+          completedChunks: data.completed_chunks,
+          totalChunks: data.total_chunks,
+          progressMessage: data.message,
+        });
+
+        if (data.status === "done") {
+          clearInterval(pollingRefs.current[taskId]);
+          delete pollingRefs.current[taskId];
+          updatePdf(filename, { status: "done", progress: 100 });
+
+          if (Notification.permission === "granted") {
+            new Notification("PDF Ready ✅", {
+              body: `${filename} has been indexed and is ready to use.`,
+            });
+          }
+        }
+
+        if (data.status === "failed") {
+          clearInterval(pollingRefs.current[taskId]);
+          delete pollingRefs.current[taskId];
+          updatePdf(filename, { status: "failed", error: data.error });
+        }
+      } catch (e) {
+        console.error("Polling error:", e);
+      }
+    }, POLL_INTERVAL);
+
+    pollingRefs.current[taskId] = intervalId;
+  };
+
+  useEffect(() => {
+    if (Notification.permission === "default") Notification.requestPermission();
+    return () => Object.values(pollingRefs.current).forEach(clearInterval);
+  }, []);
+
+  useEffect(() => {
+    setQuestion("");
+    setError(null);
+  }, [selectedPdf]);
 
   const handleUpload = async (file) => {
     setUploading(true);
     setError(null);
-    setHistory([]);
-    // New PDF = fresh session
-    sessionId.current = generateSessionId();
     try {
       const formData = new FormData();
       formData.append("pdf", file);
@@ -32,8 +83,32 @@ const PDFQAApp = () => {
         throw new Error(err.detail || "Upload failed");
       }
       const data = await res.json();
-      setUploadedFilename(data.pdf_filename);
-      setCached(data.cached);
+
+      const alreadyExists = pdfs.find(p => p.filename === data.pdf_filename);
+      if (alreadyExists) {
+        setSelectedPdf(data.pdf_filename);
+        return;
+      }
+
+      const newPdf = {
+        filename: data.pdf_filename,
+        status: data.status === "processing" ? "processing" : "done",
+        taskId: data.task_id || null,
+        sessionId: generateSessionId(),
+        history: [],
+        progress: 0,
+        completedChunks: 0,
+        totalChunks: data.num_chunks || null,
+        progressMessage: "Starting indexing...",
+      };
+
+      setPdfs(prev => [...prev, newPdf]);
+
+      if (data.status === "processing") {
+        startPolling(data.task_id, data.pdf_filename);
+      } else {
+        setSelectedPdf(data.pdf_filename);
+      }
     } catch (e) {
       setError(e.message);
     } finally {
@@ -42,7 +117,10 @@ const PDFQAApp = () => {
   };
 
   const handleAsk = async () => {
-    if (!question.trim()) return;
+    if (!question.trim() || !selectedPdf) return;
+    const pdfData = getSelectedPdfData();
+    if (!pdfData) return;
+
     setAsking(true);
     setError(null);
     try {
@@ -50,8 +128,8 @@ const PDFQAApp = () => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          pdf_filename: uploadedFilename,
-          session_id: sessionId.current,
+          pdf_filename: selectedPdf,
+          session_id: pdfData.sessionId,
           questions: [question.trim()],
         }),
       });
@@ -60,8 +138,8 @@ const PDFQAApp = () => {
         throw new Error(err.detail || "Request failed");
       }
       const data = await res.json();
-      setHistory(data.history); 
-      setQuestion("");            
+      updatePdf(selectedPdf, { history: data.history });
+      setQuestion("");
     } catch (e) {
       setError(e.message);
     } finally {
@@ -70,14 +148,15 @@ const PDFQAApp = () => {
   };
 
   const handleClearSession = async () => {
+    const pdfData = getSelectedPdfData();
+    if (!pdfData) return;
     try {
       await fetch(`${API_BASE}/clear-session`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sessionId.current }),
+        body: JSON.stringify({ session_id: pdfData.sessionId }),
       });
-      sessionId.current = generateSessionId();
-      setHistory([]);
+      updatePdf(selectedPdf, { sessionId: generateSessionId(), history: [] });
     } catch (e) {
       setError("Failed to clear session");
     }
@@ -90,7 +169,8 @@ const PDFQAApp = () => {
     }
   };
 
-  const canAsk = uploadedFilename && question.trim() && !asking && !uploading;
+  const pdfData = getSelectedPdfData();
+  const canAsk = selectedPdf && question.trim() && !asking && !uploading;
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex items-start justify-center px-4 py-16">
@@ -100,65 +180,127 @@ const PDFQAApp = () => {
         <div className="flex flex-col gap-1">
           <div className="flex items-center gap-3">
             <span className="text-2xl">🔍</span>
-            <h1 className="text-2xl font-bold tracking-tight">PDF Q&A</h1>
+            <h1 className="text-2xl font-bold tracking-tight">Docusense</h1>
           </div>
-          <p className="text-zinc-500 text-sm ml-9">Upload a PDF and ask anything about it.</p>
+          <p className="text-zinc-500 text-sm ml-9">Upload PDFs and ask anything about them.</p>
         </div>
 
         {/* Upload */}
         <div className="flex flex-col gap-2">
-          <div className="flex items-center justify-between">
-            <p className="text-xs font-semibold text-zinc-500 uppercase tracking-widest">Document</p>
-            
-          </div>
-          <FileUploadZone onUpload={handleUpload} uploading={uploading} uploadedFile={uploadedFilename} />
+          <p className="text-xs font-semibold text-zinc-500 uppercase tracking-widest">Upload</p>
+          <FileUploadZone onUpload={handleUpload} uploading={uploading} uploadedFile={null} />
         </div>
 
+        {/* PDF List */}
+        {pdfs.length > 0 && (
+          <div className="flex flex-col gap-2">
+            <p className="text-xs font-semibold text-zinc-500 uppercase tracking-widest">Your PDFs</p>
+            <div className="flex flex-col gap-2">
+              {pdfs.map((pdf) => (
+                <div
+                  key={pdf.filename}
+                  onClick={() => pdf.status === "done" && setSelectedPdf(pdf.filename)}
+                  className={`
+                    flex flex-col gap-3 px-4 py-3 rounded-xl border text-sm transition-all duration-200
+                    ${selectedPdf === pdf.filename
+                      ? "border-indigo-500 bg-indigo-950/40"
+                      : pdf.status === "done"
+                      ? "border-zinc-700 bg-zinc-900/40 hover:border-zinc-500 cursor-pointer"
+                      : pdf.status === "failed"
+                      ? "border-red-800/50 bg-red-950/20"
+                      : "border-zinc-700/50 bg-zinc-900/20"
+                    }
+                  `}
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span>
+                        {pdf.status === "failed" ? "❌" : pdf.status === "done" ? "📄" : "⏳"}
+                      </span>
+                      <div className="flex flex-col">
+                        <span className={`font-medium truncate max-w-xs ${
+                          pdf.status === "done" ? "text-zinc-200" :
+                          pdf.status === "failed" ? "text-red-400" : "text-zinc-500"
+                        }`}>
+                          {pdf.filename}
+                        </span>
+                        {pdf.status === "done" && pdf.history.length > 0 && (
+                          <span className="text-xs text-zinc-600">
+                            {pdf.history.length} message{pdf.history.length !== 1 ? "s" : ""}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="shrink-0">
+                      {pdf.status === "done" && selectedPdf === pdf.filename && (
+                        <Badge variant="success">selected</Badge>
+                      )}
+                      {pdf.status === "failed" && <Badge variant="error">failed</Badge>}
+                    </div>
+                  </div>
 
-        <ChatHistory history={history} onClear={handleClearSession} />
-
-        {/* Question */}
-        <div className="flex flex-col gap-2">
-          <p className="text-xs font-semibold text-zinc-500 uppercase tracking-widest">
-            {history.length > 0 ? "Follow-up Question" : "Question"}
-          </p>
-          <QuestionInput
-            question={question}
-            onChange={setQuestion}
-            onKeyDown={handleKeyDown}
-            disabled={!uploadedFilename || asking}
-          />
-        </div>
-
-        {/* Error */}
-        {error && (
-          <div className="bg-red-950/40 border border-red-800/50 rounded-xl px-4 py-3 text-sm text-red-300">
-            {error}
+                  {pdf.status === "processing" && (
+                    <ProgressBar
+                      progress={pdf.progress}
+                      message={pdf.progressMessage}
+                      completedChunks={pdf.completedChunks}
+                      totalChunks={pdf.totalChunks}
+                    />
+                  )}
+                </div>
+              ))}
+            </div>
+            {pdfs.some(p => p.status === "processing") && (
+              <p className="text-xs text-zinc-600">
+                Large PDFs are processed in the background. You'll be notified when ready.
+              </p>
+            )}
           </div>
         )}
 
-        {/* Submit */}
-        <button
-          onClick={handleAsk}
-          disabled={!canAsk}
-          className={`
-            w-full py-3 rounded-xl font-semibold text-sm transition-all duration-200
-            ${canAsk
-              ? "bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-900/40 active:scale-[0.98]"
-              : "bg-zinc-800 text-zinc-600 cursor-not-allowed"
-            }
-          `}
-        >
-          {asking ? (
-            <span className="flex items-center justify-center gap-2">
-              <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-              Thinking…
-            </span>
-          ) : (
-            "Ask"
-          )}
-        </button>
+        {/* Chat area */}
+        {selectedPdf && pdfData && (
+          <>
+            <ChatHistory history={pdfData.history} onClear={handleClearSession} />
 
+            <div className="flex flex-col gap-2">
+              <p className="text-xs font-semibold text-zinc-500 uppercase tracking-widest">
+                {pdfData.history.length > 0 ? "Follow-up Question" : "Question"}
+              </p>
+              <QuestionInput
+                question={question}
+                onChange={setQuestion}
+                onKeyDown={handleKeyDown}
+                disabled={asking}
+              />
+            </div>
+
+            {error && (
+              <div className="bg-red-950/40 border border-red-800/50 rounded-xl px-4 py-3 text-sm text-red-300">
+                {error}
+              </div>
+            )}
+
+            <button
+              onClick={handleAsk}
+              disabled={!canAsk}
+              className={`
+                w-full py-3 rounded-xl font-semibold text-sm transition-all duration-200
+                ${canAsk
+                  ? "bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-900/40 active:scale-[0.98]"
+                  : "bg-zinc-800 text-zinc-600 cursor-not-allowed"
+                }
+              `}
+            >
+              {asking ? (
+                <span className="flex items-center justify-center gap-2">
+                  <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  Thinking…
+                </span>
+              ) : "Ask"}
+            </button>
+          </>
+        )}
       </div>
     </div>
   );
