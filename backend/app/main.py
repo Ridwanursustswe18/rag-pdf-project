@@ -2,16 +2,20 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers import pdf
 from app.config import settings
+
 app = FastAPI(title="Persistent PDF Q&A API")
-origins = [
-    settings.frontend_url,
-]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,         # List of allowed origins
-    allow_credentials=True,        # Allow cookies to be sent with requests
-    allow_methods=["*"],           # Allow all HTTP methods (GET, POST, PUT, DELETE, etc.)
-    allow_headers=["*"],           # Allow all headers
+    allow_origins=[
+        settings.frontend_url,
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
+
 app.include_router(pdf.router, prefix="/api/v1/pdf", tags=["PDF"])
