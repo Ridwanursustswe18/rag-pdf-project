@@ -192,32 +192,6 @@ Frontend is live at `http://localhost:5173`.
 
 ---
 
-
-### Backend — Render
-
-1. Push your backend to a GitHub repository
-2. Create a new **Web Service** on [Render](https://render.com)
-3. Set the **Start Command** to `python run.py`
-4. Add environment variables in the Render dashboard (same as `.env` but without quotes)
-5. Set `FRONTEND_URL` to your deployed frontend URL — no trailing slash:
-   ```
-   FRONTEND_URL=https://your-app.vercel.app
-   ```
-
-### Frontend — Vercel
-
-1. Push your frontend to a GitHub repository
-2. Import the project on [Vercel](https://vercel.com)
-3. Add environment variable:
-   ```
-   VITE_API_BASE=https://your-backend.onrender.com/api/v1/pdf
-   ```
-4. Deploy
-
-> **Note:** Render's free tier spins down after 15 minutes of inactivity. The first request after a period of inactivity may take 30–60 seconds while the server wakes up.
-
----
-
 ## Gemini API Free Tier Limits
 
 The free tier of `gemini-embedding-001` has strict rate limits. Docusense handles this automatically:
