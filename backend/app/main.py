@@ -1,10 +1,11 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers import pdf
-
+from app.config import settings
 app = FastAPI(title="Persistent PDF Q&A API")
 origins = [
-    "http://localhost:5173",]
+    settings.frontend_url,
+]
 
 app.add_middleware(
     CORSMiddleware,

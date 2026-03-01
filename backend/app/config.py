@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     chunk_overlap: int = 150
     retriever_k: int = 4
     storage_dir: str = "indexes"
+    host: str = "0.0.0.0"
+    port: int = 8000
+    frontend_url: str = "http://localhost:5173"
 
     class Config:
         env_file = ".env"
