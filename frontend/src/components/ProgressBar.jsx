@@ -12,11 +12,7 @@ const ProgressBar = ({ progress, message, completedChunks, totalChunks }) => {
       <div className="flex items-center justify-between">
         <p className="text-xs text-zinc-500 truncate max-w-[70%]">{message}</p>
         <div className="flex items-center gap-2 shrink-0">
-          {totalChunks && (
-            <span className="text-xs text-zinc-600">
-              {completedChunks}/{totalChunks}
-            </span>
-          )}
+          
           <span className="text-xs font-semibold text-indigo-400">{progress}%</span>
         </div>
       </div>

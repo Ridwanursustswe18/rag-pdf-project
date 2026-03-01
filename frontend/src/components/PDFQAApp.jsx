@@ -3,11 +3,33 @@ import Badge from "./Badge";
 import FileUploadZone from "./FileUploadZone";
 import QuestionInput from "./QuestionInput";
 import ChatHistory from "./ChatHistory";
-import ProgressBar from "./Progressbar";
+import ProgressBar from "./ProgressBar";
 
 const API_BASE = import.meta.env.VITE_API_BASE;
 const generateSessionId = () => `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 const POLL_INTERVAL = 5000;
+
+const STORAGE_KEY = "docusense_sessions";
+
+const loadSessionMap = () => {
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+  } catch {
+    return {};
+  }
+};
+
+const saveSessionMap = (pdfs) => {
+  try {
+    const map = {};
+    pdfs.forEach(pdf => {
+      if (pdf.status === "done") {
+        map[pdf.filename] = { sessionId: pdf.sessionId };
+      }
+    });
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
+  } catch {}
+};
 
 const PDFQAApp = () => {
   const [pdfs, setPdfs] = useState([]);
@@ -16,7 +38,65 @@ const PDFQAApp = () => {
   const [asking, setAsking] = useState(false);
   const [question, setQuestion] = useState("");
   const [error, setError] = useState(null);
+  const [restoring, setRestoring] = useState(true); 
   const pollingRefs = useRef({});
+
+  useEffect(() => {
+    const restorePreviousChatSessions = async () => {
+      const sessionMap = loadSessionMap();
+      const filenames = Object.keys(sessionMap);
+
+      if (!filenames.length) {
+        setRestoring(false);
+        return;
+      }
+
+      const restored = await Promise.all(
+        filenames.map(async (filename) => {
+          const { sessionId } = sessionMap[filename];
+          try {
+            const res = await fetch(`${API_BASE}/history/${sessionId}`);
+            const data = await res.json();
+
+            return {
+              filename,
+              status: "done",
+              taskId: null,
+              sessionId,
+              history: data.history || [],
+              sessionExpired: !data.exists,
+              progress: 0,
+              completedChunks: 0,
+              totalChunks: null,
+              progressMessage: "",
+            };
+          } catch {
+            return {
+              filename,
+              status: "done",
+              taskId: null,
+              sessionId,
+              history: [],
+              sessionExpired: false,
+              progress: 0,
+              completedChunks: 0,
+              totalChunks: null,
+              progressMessage: "",
+            };
+          }
+        })
+      );
+
+      setPdfs(restored);
+      setRestoring(false);
+    };
+
+    restorePreviousChatSessions();
+  }, []);
+
+  useEffect(() => {
+    if (!restoring) saveSessionMap(pdfs);
+  }, [pdfs, restoring]);
 
   const getSelectedPdfData = () => pdfs.find(p => p.filename === selectedPdf) || null;
 
@@ -40,7 +120,6 @@ const PDFQAApp = () => {
           clearInterval(pollingRefs.current[taskId]);
           delete pollingRefs.current[taskId];
           updatePdf(filename, { status: "done", progress: 100 });
-
           if (Notification.permission === "granted") {
             new Notification("PDF Ready ✅", {
               body: `${filename} has been indexed and is ready to use.`,
@@ -57,7 +136,6 @@ const PDFQAApp = () => {
         console.error("Polling error:", e);
       }
     }, POLL_INTERVAL);
-
     pollingRefs.current[taskId] = intervalId;
   };
 
@@ -96,6 +174,7 @@ const PDFQAApp = () => {
         taskId: data.task_id || null,
         sessionId: generateSessionId(),
         history: [],
+        sessionExpired: false,
         progress: 0,
         completedChunks: 0,
         totalChunks: data.num_chunks || null,
@@ -138,7 +217,7 @@ const PDFQAApp = () => {
         throw new Error(err.detail || "Request failed");
       }
       const data = await res.json();
-      updatePdf(selectedPdf, { history: data.history });
+      updatePdf(selectedPdf, { history: data.history, sessionExpired: false });
       setQuestion("");
     } catch (e) {
       setError(e.message);
@@ -156,7 +235,12 @@ const PDFQAApp = () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ session_id: pdfData.sessionId }),
       });
-      updatePdf(selectedPdf, { sessionId: generateSessionId(), history: [] });
+      const newSessionId = generateSessionId();
+      updatePdf(selectedPdf, {
+        sessionId: newSessionId,
+        history: [],
+        sessionExpired: false,
+      });
     } catch (e) {
       setError("Failed to clear session");
     }
@@ -171,6 +255,17 @@ const PDFQAApp = () => {
 
   const pdfData = getSelectedPdfData();
   const canAsk = selectedPdf && question.trim() && !asking && !uploading;
+
+  if (restoring) {
+    return (
+      <div className="min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center">
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-8 h-8 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
+          <p className="text-zinc-500 text-sm">Restoring your sessions...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex items-start justify-center px-4 py-16">
@@ -229,6 +324,11 @@ const PDFQAApp = () => {
                             {pdf.history.length} message{pdf.history.length !== 1 ? "s" : ""}
                           </span>
                         )}
+                        {pdf.sessionExpired && (
+                          <span className="text-xs text-amber-500">
+                            Session expired — history cleared
+                          </span>
+                        )}
                       </div>
                     </div>
                     <div className="shrink-0">
@@ -250,11 +350,6 @@ const PDFQAApp = () => {
                 </div>
               ))}
             </div>
-            {pdfs.some(p => p.status === "processing") && (
-              <p className="text-xs text-zinc-600">
-                Large PDFs are processed in the background. You'll be notified when ready.
-              </p>
-            )}
           </div>
         )}
 
