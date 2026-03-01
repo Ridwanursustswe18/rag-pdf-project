@@ -8,7 +8,6 @@ import ProgressBar from "./ProgressBar";
 const API_BASE = import.meta.env.VITE_API_BASE;
 const generateSessionId = () => `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 const POLL_INTERVAL = 5000;
-
 const STORAGE_KEY = "docusense_sessions";
 
 const loadSessionMap = () => {
@@ -22,9 +21,13 @@ const loadSessionMap = () => {
 const saveSessionMap = (pdfs) => {
   try {
     const map = {};
-    pdfs.forEach(pdf => {
-      if (pdf.status === "done") {
-        map[pdf.filename] = { sessionId: pdf.sessionId };
+    pdfs.forEach(p => {
+      if (p.status === "done" || p.status === "processing") {
+        map[p.filename] = {
+          sessionId: p.sessionId,
+          status: p.status,
+          taskId: p.taskId || null,
+        };
       }
     });
     localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
@@ -38,72 +41,15 @@ const PDFQAApp = () => {
   const [asking, setAsking] = useState(false);
   const [question, setQuestion] = useState("");
   const [error, setError] = useState(null);
-  const [restoring, setRestoring] = useState(true); 
+  const [restoring, setRestoring] = useState(true);
   const pollingRefs = useRef({});
 
-  useEffect(() => {
-    const restorePreviousChatSessions = async () => {
-      const sessionMap = loadSessionMap();
-      const filenames = Object.keys(sessionMap);
-
-      if (!filenames.length) {
-        setRestoring(false);
-        return;
-      }
-
-      const restored = await Promise.all(
-        filenames.map(async (filename) => {
-          const { sessionId } = sessionMap[filename];
-          try {
-            const res = await fetch(`${API_BASE}/history/${sessionId}`);
-            const data = await res.json();
-
-            return {
-              filename,
-              status: "done",
-              taskId: null,
-              sessionId,
-              history: data.history || [],
-              sessionExpired: !data.exists,
-              progress: 0,
-              completedChunks: 0,
-              totalChunks: null,
-              progressMessage: "",
-            };
-          } catch {
-            return {
-              filename,
-              status: "done",
-              taskId: null,
-              sessionId,
-              history: [],
-              sessionExpired: false,
-              progress: 0,
-              completedChunks: 0,
-              totalChunks: null,
-              progressMessage: "",
-            };
-          }
-        })
-      );
-
-      setPdfs(restored);
-      setRestoring(false);
-    };
-
-    restorePreviousChatSessions();
-  }, []);
-
-  useEffect(() => {
-    if (!restoring) saveSessionMap(pdfs);
-  }, [pdfs, restoring]);
-
   const getSelectedPdfData = () => pdfs.find(p => p.filename === selectedPdf) || null;
-
   const updatePdf = (filename, updates) =>
     setPdfs(prev => prev.map(p => p.filename === filename ? { ...p, ...updates } : p));
 
   const startPolling = (taskId, filename) => {
+    if (pollingRefs.current[taskId]) return; 
     const intervalId = setInterval(async () => {
       try {
         const res = await fetch(`${API_BASE}/upload-status/${taskId}`);
@@ -121,9 +67,7 @@ const PDFQAApp = () => {
           delete pollingRefs.current[taskId];
           updatePdf(filename, { status: "done", progress: 100 });
           if (Notification.permission === "granted") {
-            new Notification("PDF Ready ✅", {
-              body: `${filename} has been indexed and is ready to use.`,
-            });
+            new Notification("PDF Ready ✅", { body: `${filename} is ready to use.` });
           }
         }
 
@@ -140,14 +84,95 @@ const PDFQAApp = () => {
   };
 
   useEffect(() => {
+    const restore = async () => {
+      const sessionMap = loadSessionMap();
+      const filenames = Object.keys(sessionMap);
+
+      if (!filenames.length) {
+        setRestoring(false);
+        return;
+      }
+
+      const restored = await Promise.all(
+        filenames.map(async (filename) => {
+          const { sessionId, status, taskId } = sessionMap[filename];
+
+          const base = {
+            filename,
+            sessionId,
+            taskId: taskId || null,
+            history: [],
+            sessionExpired: false,
+            progress: 0,
+            completedChunks: 0,
+            totalChunks: null,
+            progressMessage: "",
+          };
+
+          if (status === "processing" && taskId) {
+            try {
+              const res = await fetch(`${API_BASE}/upload-status/${taskId}`);
+              const data = await res.json();
+
+              if (data.status === "done") {
+                return { ...base, status: "done", progress: 100 };
+              }
+              if (data.status === "failed") {
+                return { ...base, status: "failed", error: data.error };
+              }
+              return {
+                ...base,
+                status: "processing",
+                progress: data.progress,
+                completedChunks: data.completed_chunks,
+                totalChunks: data.total_chunks,
+                progressMessage: data.message,
+              };
+            } catch {
+              return { ...base, status: "failed", error: "Could not reconnect to indexing task." };
+            }
+          }
+
+          try {
+            const res = await fetch(`${API_BASE}/history/${sessionId}`);
+            const data = await res.json();
+            return {
+              ...base,
+              status: "done",
+              history: data.history || [],
+              sessionExpired: !data.exists,
+            };
+          } catch {
+            return { ...base, status: "done" };
+          }
+        })
+      );
+
+      setPdfs(restored);
+
+      restored.forEach(pdf => {
+        if (pdf.status === "processing" && pdf.taskId) {
+          startPolling(pdf.taskId, pdf.filename);
+        }
+      });
+
+      setRestoring(false);
+    };
+
+    restore();
     if (Notification.permission === "default") Notification.requestPermission();
     return () => Object.values(pollingRefs.current).forEach(clearInterval);
   }, []);
 
   useEffect(() => {
+    if (!restoring) saveSessionMap(pdfs);
+  }, [pdfs, restoring]);
+
+  useEffect(() => {
     setQuestion("");
     setError(null);
   }, [selectedPdf]);
+
 
   const handleUpload = async (file) => {
     setUploading(true);
@@ -199,7 +224,6 @@ const PDFQAApp = () => {
     if (!question.trim() || !selectedPdf) return;
     const pdfData = getSelectedPdfData();
     if (!pdfData) return;
-
     setAsking(true);
     setError(null);
     try {
@@ -235,12 +259,7 @@ const PDFQAApp = () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ session_id: pdfData.sessionId }),
       });
-      const newSessionId = generateSessionId();
-      updatePdf(selectedPdf, {
-        sessionId: newSessionId,
-        history: [],
-        sessionExpired: false,
-      });
+      updatePdf(selectedPdf, { sessionId: generateSessionId(), history: [], sessionExpired: false });
     } catch (e) {
       setError("Failed to clear session");
     }
@@ -271,7 +290,6 @@ const PDFQAApp = () => {
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex items-start justify-center px-4 py-16">
       <div className="w-full max-w-2xl flex flex-col gap-8">
 
-        {/* Header */}
         <div className="flex flex-col gap-1">
           <div className="flex items-center gap-3">
             <span className="text-2xl">🔍</span>
@@ -280,13 +298,11 @@ const PDFQAApp = () => {
           <p className="text-zinc-500 text-sm ml-9">Upload PDFs and ask anything about them.</p>
         </div>
 
-        {/* Upload */}
         <div className="flex flex-col gap-2">
           <p className="text-xs font-semibold text-zinc-500 uppercase tracking-widest">Upload</p>
           <FileUploadZone onUpload={handleUpload} uploading={uploading} uploadedFile={null} />
         </div>
 
-        {/* PDF List */}
         {pdfs.length > 0 && (
           <div className="flex flex-col gap-2">
             <p className="text-xs font-semibold text-zinc-500 uppercase tracking-widest">Your PDFs</p>
@@ -309,36 +325,27 @@ const PDFQAApp = () => {
                 >
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <span>
-                        {pdf.status === "failed" ? "❌" : pdf.status === "done" ? "📄" : "⏳"}
-                      </span>
+                      <span>{pdf.status === "failed" ? "❌" : pdf.status === "done" ? "📄" : "⏳"}</span>
                       <div className="flex flex-col">
                         <span className={`font-medium truncate max-w-xs ${
                           pdf.status === "done" ? "text-zinc-200" :
                           pdf.status === "failed" ? "text-red-400" : "text-zinc-500"
-                        }`}>
-                          {pdf.filename}
-                        </span>
+                        }`}>{pdf.filename}</span>
                         {pdf.status === "done" && pdf.history.length > 0 && (
                           <span className="text-xs text-zinc-600">
                             {pdf.history.length} message{pdf.history.length !== 1 ? "s" : ""}
                           </span>
                         )}
                         {pdf.sessionExpired && (
-                          <span className="text-xs text-amber-500">
-                            Session expired — history cleared
-                          </span>
+                          <span className="text-xs text-amber-500">Session expired — history cleared</span>
                         )}
                       </div>
                     </div>
                     <div className="shrink-0">
-                      {pdf.status === "done" && selectedPdf === pdf.filename && (
-                        <Badge variant="success">selected</Badge>
-                      )}
+                      {pdf.status === "done" && selectedPdf === pdf.filename && <Badge variant="success">selected</Badge>}
                       {pdf.status === "failed" && <Badge variant="error">failed</Badge>}
                     </div>
                   </div>
-
                   {pdf.status === "processing" && (
                     <ProgressBar
                       progress={pdf.progress}
@@ -353,40 +360,24 @@ const PDFQAApp = () => {
           </div>
         )}
 
-        {/* Chat area */}
         {selectedPdf && pdfData && (
           <>
             <ChatHistory history={pdfData.history} onClear={handleClearSession} />
-
             <div className="flex flex-col gap-2">
               <p className="text-xs font-semibold text-zinc-500 uppercase tracking-widest">
                 {pdfData.history.length > 0 ? "Follow-up Question" : "Question"}
               </p>
-              <QuestionInput
-                question={question}
-                onChange={setQuestion}
-                onKeyDown={handleKeyDown}
-                disabled={asking}
-              />
+              <QuestionInput question={question} onChange={setQuestion} onKeyDown={handleKeyDown} disabled={asking} />
             </div>
-
             {error && (
-              <div className="bg-red-950/40 border border-red-800/50 rounded-xl px-4 py-3 text-sm text-red-300">
-                {error}
-              </div>
+              <div className="bg-red-950/40 border border-red-800/50 rounded-xl px-4 py-3 text-sm text-red-300">{error}</div>
             )}
-
-            <button
-              onClick={handleAsk}
-              disabled={!canAsk}
-              className={`
-                w-full py-3 rounded-xl font-semibold text-sm transition-all duration-200
+            <button onClick={handleAsk} disabled={!canAsk}
+              className={`w-full py-3 rounded-xl font-semibold text-sm transition-all duration-200
                 ${canAsk
                   ? "bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-900/40 active:scale-[0.98]"
                   : "bg-zinc-800 text-zinc-600 cursor-not-allowed"
-                }
-              `}
-            >
+                }`}>
               {asking ? (
                 <span className="flex items-center justify-center gap-2">
                   <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
