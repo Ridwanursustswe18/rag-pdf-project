@@ -304,7 +304,7 @@ const PDFQAApp = () => {
         <div className="flex flex-col gap-1">
           <div className="flex items-center gap-3">
             <span className="text-2xl">🔍</span>
-            <h1 className="text-2xl font-bold tracking-tight">Docusense</h1>
+            <h1 className="text-2xl font-bold tracking-tight">AskMyPDF</h1>
           </div>
           <p className="text-zinc-500 text-sm ml-9">Upload PDFs and ask anything about them.</p>
         </div>
