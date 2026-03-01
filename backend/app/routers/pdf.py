@@ -2,11 +2,11 @@ from fastapi import APIRouter, UploadFile, HTTPException
 
 from app.schemas.pdf import (
     AskRequest, ClearSessionRequest,
-    UploadResponse, AskResponse, TaskStatusResponse
+    UploadResponse, AskResponse, TaskStatusResponse, HistoryResponse
 )
 from app.services.pdf_services import process_pdf_upload
 from app.services.qa_services import answer_questions
-from app.services.session_store import clear_session
+from app.services.session_store import clear_session, get_history, session_exists
 from app.services.task_store import get_task
 
 router = APIRouter()
@@ -35,6 +35,17 @@ async def upload_status(task_id: str):
     )
 
 
+@router.get("/history/{session_id}", response_model=HistoryResponse)
+async def get_session_history(session_id: str):
+    exists = session_exists(session_id)
+    history = get_history(session_id) if exists else []
+    return HistoryResponse(
+        session_id=session_id,
+        exists=exists,
+        history=[{"question": h["question"], "answer": h["answer"]} for h in history],
+    )
+
+
 @router.post("/ask", response_model=AskResponse)
 async def ask_pdf(request: AskRequest):
     return await answer_questions(
@@ -46,7 +57,6 @@ async def ask_pdf(request: AskRequest):
 
 @router.post("/clear-session")
 async def clear_chat_session(request: ClearSessionRequest):
-    """Clear conversation memory for a session."""
     cleared = clear_session(request.session_id)
     return {
         "status": "success" if cleared else "not_found",

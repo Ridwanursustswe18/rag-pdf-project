@@ -39,7 +39,7 @@ class TaskStatusResponse(BaseModel):
     pdf_filename: str
     status: str                        
     message: str
-    progress: int = 0                  
+    progress: int = 0                 
     completed_chunks: int = 0
     total_chunks: Optional[int] = None
     num_chunks: Optional[int] = None
@@ -53,4 +53,10 @@ class AskResponse(BaseModel):
     session_id: str
     num_questions: int
     results: List[QAResult]
+    history: List[QAResult]
+
+
+class HistoryResponse(BaseModel):
+    session_id: str
+    exists: bool                
     history: List[QAResult]

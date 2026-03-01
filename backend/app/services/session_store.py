@@ -1,6 +1,7 @@
 from typing import Dict
 from langchain_community.chat_message_histories import ChatMessageHistory
 
+# In-memory store: { session_id: ChatMessageHistory }
 _sessions: Dict[str, ChatMessageHistory] = {}
 
 WINDOW_SIZE = 20
@@ -24,8 +25,11 @@ def get_history(session_id: str) -> list:
             "question": messages[i].content,
             "answer": messages[i + 1].content if i + 1 < len(messages) else "",
         })
-
     return pairs[-WINDOW_SIZE:]
+
+
+def session_exists(session_id: str) -> bool:
+    return session_id in _sessions and len(_sessions[session_id].messages) > 0
 
 
 def clear_session(session_id: str) -> bool:
