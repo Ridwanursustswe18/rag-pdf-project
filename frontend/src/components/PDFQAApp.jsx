@@ -18,6 +18,16 @@ const loadSessionMap = () => {
   }
 };
 
+const fetchWithTimeout = async (url, ms = 3000) => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    return clearTimeout(timer);
+  }
+};
+
 const saveSessionMap = (pdfs) => {
   try {
     const map = {};
@@ -41,7 +51,7 @@ const PDFQAApp = () => {
   const [asking, setAsking] = useState(false);
   const [question, setQuestion] = useState("");
   const [error, setError] = useState(null);
-  const [restoring, setRestoring] = useState(true);
+  const [restoring, setRestoring] = useState(() => Object.keys(loadSessionMap()).length > 0);
   const pollingRefs = useRef({});
 
   const getSelectedPdfData = () => pdfs.find(p => p.filename === selectedPdf) || null;
@@ -111,7 +121,7 @@ const PDFQAApp = () => {
 
           if (status === "processing" && taskId) {
             try {
-              const res = await fetch(`${API_BASE}/upload-status/${taskId}`);
+              const res = await fetchWithTimeout(`${API_BASE}/upload-status/${taskId}`);
               const data = await res.json();
 
               if (data.status === "done") {
@@ -134,7 +144,7 @@ const PDFQAApp = () => {
           }
 
           try {
-            const res = await fetch(`${API_BASE}/history/${sessionId}`);
+            const res = await fetchWithTimeout(`${API_BASE}/history/${sessionId}`);
             const data = await res.json();
             return {
               ...base,
@@ -150,9 +160,9 @@ const PDFQAApp = () => {
 
       setPdfs(restored);
 
-      restored.forEach(pdf => {
-        if (pdf.status === "processing" && pdf.taskId) {
-          startPolling(pdf.taskId, pdf.filename);
+      restored.forEach(p => {
+        if (p.status === "processing" && p.taskId) {
+          startPolling(p.taskId, p.filename);
         }
       });
 
@@ -173,7 +183,7 @@ const PDFQAApp = () => {
     setError(null);
   }, [selectedPdf]);
 
-
+  // ── Upload ─────────────────────────────────────────────────
   const handleUpload = async (file) => {
     setUploading(true);
     setError(null);
@@ -220,6 +230,7 @@ const PDFQAApp = () => {
     }
   };
 
+  // ── Ask ────────────────────────────────────────────────────
   const handleAsk = async () => {
     if (!question.trim() || !selectedPdf) return;
     const pdfData = getSelectedPdfData();
